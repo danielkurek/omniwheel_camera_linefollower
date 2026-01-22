@@ -11,11 +11,9 @@ from PCA9685_smbus2 import PCA9685
 from gpiozero import DigitalOutputDevice
 
 class PicameraStream:
-    def __init__(self, width=320, height=240):
+    def __init__(self, width=640, height=480):
         self.picam2 = Picamera2()
         
-        self.width = width
-        self.height = height
         # Configure the camera hardware (ISP) to resize images automatically.
         # This saves a massive amount of CPU power.
         config = self.picam2.create_video_configuration(
@@ -47,8 +45,8 @@ class PicameraStream:
     def update(self):
         while not self.stopped:
             try:
-                self.gray_frame = self.picam2.capture_array("main")[:self.height, :self.width]
-                #self.gray_frame = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+                self.gray_frame = self.picam2.capture_array("main")
+                self.gray_frame = self.gray_frame[0:480, 0:640] 
             except Exception as e:
                 print(f"Camera Thread Error: {e}")
                 self.stopped = True
@@ -68,24 +66,17 @@ class Robot():
         self.m1fw, self.m1bw = DigitalOutputDevice(pin=23), DigitalOutputDevice(pin=22)  # Motor 1
         self.m2fw, self.m2bw = DigitalOutputDevice(pin=24), DigitalOutputDevice(pin=25)  # Motor 2
         self.m3fw, self.m3bw = DigitalOutputDevice(pin=27), DigitalOutputDevice(pin=26)  # Motor 3
-        
-        # self.pwm_a = GPIO.PWM(self.ena, 50)
-        # self.pwm_b = GPIO.PWM(self.enb, 50)
-        # self.pwm_c = GPIO.PWM(self.enc, 50)
-        
-        # self.pwm_a.start(0)
-        # self.pwm_b.start(0)
-        # self.pwm_c.start(0)
+
         self.pwm = PCA9685.PCA9685(interface=1)
-        self.pwm.set_pwm_freq(1526)
+        self.pwm.set_pwm_freq(1600)
         self.pwm.set_all_pwm(0,0)
         
         # okay
         self.max_physical_speed = 1.0 
         
         # dont judge, just enjoy :D
-        self.motor1 = [3 ,self.m1fw, self.m1bw]
-        self.motor2 = [0 ,self.m2fw, self.m2bw]
+        self.motor2 = [3 ,self.m1fw, self.m1bw]
+        self.motor1 = [0 ,self.m2fw, self.m2bw]
         self.motor3 = [1 ,self.m3fw, self.m3bw]
         self.motors = [self.motor1, self.motor2, self.motor3]
 
@@ -119,7 +110,7 @@ class Robot():
         # camera configuration
         print("Starting Camera Thread...")
         # 320x240 is the sweet spot for speed/accuracy on Pi
-        self.camera = PicameraStream(width=320, height=240).start()
+        self.camera = PicameraStream(width=640, height=480).start()
         time.sleep(1)
     def preprocess_image(self, gray, th_w, th_h):
         """
@@ -221,10 +212,10 @@ class Robot():
 
         vx, vy = self.linearSpeed*self.dx, self.linearSpeed*self.dy
         v = np.array([vx, vy, self.angularVelocity], dtype=float)
-
+        #v = np.array([0,1000,0], dtype=float)
         # wheel linear speeds (if r=1) or angular speeds (rad/s) if you divide by real r
         w = (M @ v) / self.wheelRadius
-        # print("wheel speeds:", w)
+        print("wheel speeds:", w)
         return w
         
         
@@ -263,17 +254,19 @@ class Robot():
     def set_single_motor(self, pwm_channel, infw, inbw, speed):
         speed = max(min(speed, 100), -100) # Clamp
         speed /= 100
-        speed = speed * 4096
+        speed = speed * 1000
         speed = int(speed)
-        
+        print("speed clipped = ", speed)
+            
         if speed >= 0:
             infw.on()
             inbw.off()
-            self.pwm.set_pwm(pwm_channel, 0, 4096 - speed)
+            self.pwm.set_pwm(pwm_channel, 0, abs(speed))
+            
         else:
             infw.off()
             inbw.on()
-            self.pwm.set_pwm(pwm_channel, 0, 4096 - speed)
+            self.pwm.set_pwm(pwm_channel, 0, abs(speed))
     
     # digitaloutout device inpins x2 , on or of freq 42k | set duty cycle, value 0.5 + pid
     def apply_wheel_speeds(self, w):
@@ -281,7 +274,6 @@ class Robot():
         Takes the calculated wheel speeds (w), normalizes them, 
         and sends PWM signals to the motors.
         """
-        # print(f"Target Speeds: {w}")
 
         for motor_info, speed in zip(self.motors, w):
             pwm_val = (speed / self.max_physical_speed) * 100
@@ -299,8 +291,8 @@ class Robot():
 
     def run(self):
         # --- CONFIGURATION ---
-        MAX_LOST_FRAMES = 100  # If line lost for 10 frames, STOP.
-        CENTER_X = 160        # Target center (half of image width 320)
+        MAX_LOST_FRAMES = 100000  # If line lost for 10 frames, STOP.
+        CENTER_X = 320        # Target center (half of image width 320)
         
         lost_counter = 0
 
@@ -361,7 +353,7 @@ class Robot():
                     
                     # PID Calc
                     correction = self.pid_correction(error)
-                    self.angularVelocity = -correction * 0.01
+                    # self.angularVelocity = -correction * 0.01
 
                     # Drive Motors
                     w = self.get_motorW()
