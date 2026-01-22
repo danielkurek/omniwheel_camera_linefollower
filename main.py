@@ -1,42 +1,92 @@
-from picamera2 import Picamera2, Preview
-import cv2
-import numpy as np
 import time
+import threading
+import numpy as np
+import cv2
+from picamera2 import Picamera2, Preview
+from libcamera import Transform
 import RPi.GPIO as GPIO
 import os
 import shutil
+from PCA9685_smbus2 import PCA9685
+from gpiozero import DigitalOutputDevice
 
+class PicameraStream:
+    def __init__(self, width=320, height=240):
+        self.picam2 = Picamera2()
+        
+        self.width = width
+        self.height = height
+        # Configure the camera hardware (ISP) to resize images automatically.
+        # This saves a massive amount of CPU power.
+        config = self.picam2.create_video_configuration(
+            main={"size": (width, height), "format": "YUV420"},
+            transform=Transform(vflip=True)
+        )
+        self.picam2.configure(config)
+        
+        self.picam2.start()
+
+        self.stopped = False
+        self.gray_frame = None
+        
+        with self.picam2.controls as ctrl:
+            ctrl.AnalogueGain = 2.0 
+            ctrl.ExposureTime = 50000    
+            
+        # Start the background thread,and kill the thread if done. 
+        self.t = threading.Thread(target=self.update, args=())
+        self.t.daemon = True 
+
+    def start(self):
+        self.t.start()
+        # Block until the first frame is ready (prevents startup errors)
+        while self.gray_frame is None:
+            time.sleep(0.01)
+        return self
+
+    def update(self):
+        while not self.stopped:
+            try:
+                self.gray_frame = self.picam2.capture_array("main")[:self.height, :self.width]
+                #self.gray_frame = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            except Exception as e:
+                print(f"Camera Thread Error: {e}")
+                self.stopped = True
+
+    def read_gray(self):
+        """Returns the most recent frame available."""
+        return self.gray_frame
+
+    def stop(self):
+        self.stopped = True
+        self.picam2.stop()
 
 class Robot():
 
     def __init__(self):
         
-        self.ena, self.in1, self.in2 = 18, 23, 24  # Motor 1
-        self.enb, self.in3, self.in4 = 19, 5, 6    # Motor 2
-        self.enc, self.in5, self.in6 = 13, 16, 26  # Motor 3
+        self.m1fw, self.m1bw = DigitalOutputDevice(pin=23), DigitalOutputDevice(pin=22)  # Motor 1
+        self.m2fw, self.m2bw = DigitalOutputDevice(pin=24), DigitalOutputDevice(pin=25)  # Motor 2
+        self.m3fw, self.m3bw = DigitalOutputDevice(pin=27), DigitalOutputDevice(pin=26)  # Motor 3
         
-        ## set pins
-        GPIO.setmode(GPIO.BCM)
-        pins = [self.ena, self.in1, self.in2, 
-                self.enb, self.in3, self.in4, 
-                self.enc, self.in5, self.in6]
-        GPIO.setup(pins, GPIO.OUT)
+        # self.pwm_a = GPIO.PWM(self.ena, 50)
+        # self.pwm_b = GPIO.PWM(self.enb, 50)
+        # self.pwm_c = GPIO.PWM(self.enc, 50)
         
-        self.pwm_a = GPIO.PWM(self.ena, 42000)
-        self.pwm_b = GPIO.PWM(self.enb, 42000)
-        self.pwm_c = GPIO.PWM(self.enc, 42000)
-        
-        self.pwm_a.start(0)
-        self.pwm_b.start(0)
-        self.pwm_c.start(0)
+        # self.pwm_a.start(0)
+        # self.pwm_b.start(0)
+        # self.pwm_c.start(0)
+        self.pwm = PCA9685.PCA9685(interface=1)
+        self.pwm.set_pwm_freq(1526)
+        self.pwm.set_all_pwm(0,0)
         
         # okay
         self.max_physical_speed = 1.0 
         
         # dont judge, just enjoy :D
-        self.motor1 = [self.pwm_a, self.in1, self.in2]
-        self.motor2 = [self.pwm_b, self.in3, self.in4]
-        self.motor3 = [self.pwm_c, self.in5, self.in6]     
+        self.motor1 = [3 ,self.m1fw, self.m1bw]
+        self.motor2 = [0 ,self.m2fw, self.m2bw]
+        self.motor3 = [1 ,self.m3fw, self.m3bw]
         self.motors = [self.motor1, self.motor2, self.motor3]
 
         # -- Debugging --
@@ -48,8 +98,8 @@ class Robot():
         self.angles = np.deg2rad([90, 210, 330])    # angles of the weels
         self.linearSpeed = 0.8                      # m/s linear speed along (dx,dy)
         self.angularVelocity = 0.0                  # rad/s (spin). Set >0 to rotate CCW
-        self.wheelRadius = 1.0                      # wheel radius in meters (or set to your real radius)
-        self.radius = 1                             # radius of robot
+        self.wheelRadius = 0.045                      # wheel radius in meters (or set to your real radius)
+        self.radius = 0.09                             # radius of robot
 
         # -- Runtime
         self.w = 0
@@ -67,23 +117,10 @@ class Robot():
         self.last_time = time.time()
         
         # camera configuration
-        self.camera = self.configure_camera()
-    
-    def configure_camera(self):
-        picam2 = Picamera2()  
-        picam2.start_preview(Preview.NULL)  
-        capture_config = picam2.create_still_configuration(main={"size": (320, 240)})  
-        picam2.configure(capture_config)
-        picam2.start()
-
+        print("Starting Camera Thread...")
+        # 320x240 is the sweet spot for speed/accuracy on Pi
+        self.camera = PicameraStream(width=320, height=240).start()
         time.sleep(1)
-        with picam2.controls as ctrl:
-            ctrl.AnalogueGain = 1.0
-            ctrl.ExposureTime = 50000
-        time.sleep(1)
-
-        return picam2
-    
     def preprocess_image(self, gray, th_w, th_h):
         """
         # We coud blur before threshold and clean afterwards
@@ -135,10 +172,6 @@ class Robot():
 
 
     def draw_debug_info(self, image: np.ndarray, cx: float, cy: float, dx: float, dy: float) -> np.ndarray:
-        """
-        Draws the centroid and direction vector onto an image for debugging.
-        Returns a new BGR image with info drawn on it.
-        """
         # We need a color image to draw in color
         if len(image.shape) == 2:
             debug_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
@@ -155,14 +188,6 @@ class Robot():
         return debug_img
 
     def debug_save_images(self, images: dict, save_dir: str, frame_id: int):
-        """
-        Saves multiple images to a specified directory.
-        
-        Args:
-            images: A dictionary of {"file_suffix": image_array}.
-            save_dir: The directory to save images to (e.g., "debug_frames").
-            frame_id: The current frame number (e.g., 1, 2, 3...).
-        """
         # Ensure the save directory exists
         os.makedirs(save_dir, exist_ok=True)
         
@@ -173,7 +198,6 @@ class Robot():
                 cv2.imwrite(filename, img)
 
     def get_motorW(self):
-
         # wheel angles around the robot
         x = self.radius * np.cos(self.angles)
         y = self.radius * np.sin(self.angles)
@@ -200,9 +224,10 @@ class Robot():
 
         # wheel linear speeds (if r=1) or angular speeds (rad/s) if you divide by real r
         w = (M @ v) / self.wheelRadius
-        print("wheel speeds:", w)
+        # print("wheel speeds:", w)
         return w
-    
+        
+        
     def pid_correction(self, error):
         current_time = time.time()
         delta_time = current_time - self.last_time
@@ -228,12 +253,6 @@ class Robot():
 
         return P + I + D
     
-    def capture_frame_gray(self):
-        im = self.camera.capture_array()
-        grey = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-        self.camera.capture_file("demo.jpg")
-        return grey
-    
     def _clean_debug_dir(self):
         """Deletes the debug directory and recreates it empty."""
         if os.path.exists(self.debug_save_dir):
@@ -241,18 +260,20 @@ class Robot():
         os.makedirs(self.debug_save_dir, exist_ok=True) # Creates fresh dir
         print(f"[INFO] Cleared and renewed debug directory: {self.debug_save_dir}")
     
-    def set_single_motor(self, pwm_obj, in_x, in_y, speed):
-        """Helper to set one motor's speed (-100 to 100)"""
+    def set_single_motor(self, pwm_channel, infw, inbw, speed):
         speed = max(min(speed, 100), -100) # Clamp
+        speed /= 100
+        speed = speed * 4096
+        speed = int(speed)
         
         if speed >= 0:
-            GPIO.output(in_x, GPIO.HIGH)
-            GPIO.output(in_y, GPIO.LOW)
-            pwm_obj.ChangeDutyCycle(speed)
+            infw.on()
+            inbw.off()
+            self.pwm.set_pwm(pwm_channel, 0, 4096 - speed)
         else:
-            GPIO.output(in_x, GPIO.LOW)
-            GPIO.output(in_y, GPIO.HIGH)
-            pwm_obj.ChangeDutyCycle(abs(speed))
+            infw.off()
+            inbw.on()
+            self.pwm.set_pwm(pwm_channel, 0, 4096 - speed)
     
     # digitaloutout device inpins x2 , on or of freq 42k | set duty cycle, value 0.5 + pid
     def apply_wheel_speeds(self, w):
@@ -260,73 +281,106 @@ class Robot():
         Takes the calculated wheel speeds (w), normalizes them, 
         and sends PWM signals to the motors.
         """
-        print(f"Target Speeds: {w}")
+        # print(f"Target Speeds: {w}")
 
         for motor_info, speed in zip(self.motors, w):
             pwm_val = (speed / self.max_physical_speed) * 100
             
             # motor_info = [pwm_object, pin_a, pin_b]
             self.set_single_motor(motor_info[0], motor_info[1], motor_info[2], pwm_val)
-        
-        
+          
     def stop_all(self):
+        print(" EMERGENCY STOP: Halting all systems.")
         for motor in self.motors:
-            motor.stop()
-        self.camera.stop()
-
+            if hasattr(motor, 'stop'):
+                motor.stop()
+        if hasattr(self, 'camera'):
+            self.camera.stop()
 
     def run(self):
-        while True:
-            # Increment frame counter
-            self.frame_count += 1
-            
-            # --- 1. Get Image ---
-            img_gray = self.capture_frame_gray()
-            mask, roi = self.preprocess_image(img_gray, th_w=0.35, th_h=0.1)
-            
-            # --- 3. Handle line detection ---
-            debug_overlay = None 
-            try:
-                cx, cy, dx, dy = self.middle_vector(mask)
-                self.cx = cx
-                self.cy = cy
-                self.dx = dx
-                self.dy = dy
+        # --- CONFIGURATION ---
+        MAX_LOST_FRAMES = 100  # If line lost for 10 frames, STOP.
+        CENTER_X = 160        # Target center (half of image width 320)
+        
+        lost_counter = 0
+
+        try:
+            print("Robot Loop Started. Press Ctrl+C to stop.")
+            while True:
+                # 1. GET IMAGE (Instant non-blocking read)
+                start = time.time()
+                img_gray = self.camera.read_gray()
+                print(f"{img_gray.shape=}")
                 
-                # We only need to draw if we found a line
-                debug_overlay = self.draw_debug_info(roi, cx, cy, dx, dy)
+                if img_gray is None: 
+                    continue # Wait if camera glitches
 
-            except ValueError:
-                print("Line lost, continuing with last known direction...")
-                pass # debug_overlay remains None
+                self.frame_count += 1
 
-            
-            # --- 4. DEBUG SAVING (every 10th frame) ---
-            if self.frame_count % 10 == 0:
-                print(f"Saving debug frames for frame {self.frame_count}...")
-                self.debug_save_images(
-                    images={
-                        "1_Gray": img_gray,
-                        "2_ROI": roi,
-                        "3_Mask": mask,
-                        "4_Overlay": debug_overlay
-                    },
-                    save_dir=self.debug_save_dir,
-                    frame_id=self.frame_count
-                )
+                # 2. IMAGE PROCESSING
+                mask, roi = self.preprocess_image(img_gray, th_w=0.35, th_h=0.1)
+                print(f"{mask.shape=} {roi.shape=}")
+
+                try:
+                    cx, cy, dx, dy = self.middle_vector(mask)
+                    
+                    # Update State (Found Line)
+                    self.cx, self.cy = cx, cy
+                    self.dx, self.dy = dx, dy
+                    lost_counter = 0
+                    debug_overlay = self.draw_debug_info(roi, cx, cy, dx, dy)
+                    print(f"{debug_overlay.shape=}")
+                    
+
+                except ValueError:
+                    # SAFETY WATCHDOG: Handle Lost Line
+                    lost_counter += 1
+                    if lost_counter > MAX_LOST_FRAMES:
+                        print("Line lost for too long! Safety Stop.")
+                        self.stop_all()
+                        break 
+                    
+                # --- 4. DEBUG SAVING (every 10th frame) ---
+                if self.frame_count % 100 == 0:
+                     print(f"Saving debug frames for frame {self.frame_count}...")
+                     self.debug_save_images(
+                         images={
+                             "1_Gray": img_gray,
+                             "2_ROI": roi,
+                             "3_Mask": mask,
+                             "4_Overlay": debug_overlay
+                         },
+                         save_dir=self.debug_save_dir,
+                         frame_id=self.frame_count
+                     )
                 
-            
-            # how much have we moved from the center
-            error = 160 - self.cx
-            correction = self.pid_correction(error)
-            self.angularVelocity = -correction * 0.01
+                # 3. CONTROL LOOP (Only drive if line is valid)
+                if lost_counter <= MAX_LOST_FRAMES:
+                    # Calculate Error
+                    error = CENTER_X - self.cx
+                    
+                    # PID Calc
+                    correction = self.pid_correction(error)
+                    self.angularVelocity = -correction * 0.01
 
-            # with the corrected anculgar velocity, get wheel speeds
-            w = self.get_motorW()
-            
-            
-            self.apply_wheel_speeds(w)
+                    # Drive Motors
+                    w = self.get_motorW()
+                    print(f"{w=} {self.cx=}")
+                    self.apply_wheel_speeds(w)
+                
+                end = time.time()
+                print(f"time = {end-start}")
+        except KeyboardInterrupt:
+            print("\nUser Interrupted (Ctrl+C)")
 
-if __name__ == "__main__":  
+        except Exception as e:
+            print(f"\nCRITICAL ERROR: {e}")
+
+        finally:
+            # 4. CLEANUP (Guaranteed to run)
+            self.stop_all()
+            print("Cleanup complete.")
+
+if __name__ == "__main__":
     robot = Robot()
     robot.run()
