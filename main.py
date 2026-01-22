@@ -63,9 +63,9 @@ class Robot():
 
     def __init__(self):
         
-        self.m1fw, self.m1bw = DigitalOutputDevice(pin=23), DigitalOutputDevice(pin=22)  # Motor 1
-        self.m2fw, self.m2bw = DigitalOutputDevice(pin=24), DigitalOutputDevice(pin=25)  # Motor 2
-        self.m3fw, self.m3bw = DigitalOutputDevice(pin=27), DigitalOutputDevice(pin=26)  # Motor 3
+        self.m1fw, self.m1bw = DigitalOutputDevice(pin=26), DigitalOutputDevice(pin=27)  # Motor 1
+        self.m2fw, self.m2bw = DigitalOutputDevice(pin=22), DigitalOutputDevice(pin=23)  # Motor 2
+        self.m3fw, self.m3bw = DigitalOutputDevice(pin=25), DigitalOutputDevice(pin=24)  # Motor 3
 
         self.pwm = PCA9685.PCA9685(interface=1)
         self.pwm.set_pwm_freq(1600)
@@ -75,9 +75,9 @@ class Robot():
         self.max_physical_speed = 1.0 
         
         # dont judge, just enjoy :D
-        self.motor2 = [3 ,self.m1fw, self.m1bw]
-        self.motor1 = [0 ,self.m2fw, self.m2bw]
-        self.motor3 = [1 ,self.m3fw, self.m3bw]
+        self.motor1 = [1 ,self.m1fw, self.m1bw]
+        self.motor2 = [3 ,self.m2fw, self.m2bw]
+        self.motor3 = [0 ,self.m3fw, self.m3bw]
         self.motors = [self.motor1, self.motor2, self.motor3]
 
         # -- Debugging --
@@ -86,7 +86,7 @@ class Robot():
         self._clean_debug_dir()
         
         # -- Constants --
-        self.angles = np.deg2rad([90, 210, 330])    # angles of the weels
+        self.angles = np.deg2rad([60, 300, 180])    # angles of the wheels
         self.linearSpeed = 0.8                      # m/s linear speed along (dx,dy)
         self.angularVelocity = 0.0                  # rad/s (spin). Set >0 to rotate CCW
         self.wheelRadius = 0.045                      # wheel radius in meters (or set to your real radius)
@@ -197,21 +197,30 @@ class Robot():
         y1, y2, y3 = y
 
         # drive directions = perpendiculars (90 CCW): (nx, ny) = (-y, x)
-        nx1, ny1 = -y1, x1
-        nx2, ny2 = -y2, x2
-        nx3, ny3 = -y3, x3
+        nx1, ny1 = x1, y1
+        nx2, ny2 = x2, y2
+        nx3, ny3 = x3, y3
+
+        
+        print("nx1 = ", nx1)
+        print("ny1 = ", ny1)
+        print("nx2 = ", nx2)
+        print("ny2 = ", ny2)
+        print("nx3 = ", nx3)
+        print("ny3 = ", ny3)
+        
 
         # kinematic matrix (linear rim speed). For this symmetric layout,
         # the rotation coupling term (ny*x - nx*y) = 1 for all three.
         M = np.array([
-            [nx1, ny1, ny1*x1 - nx1*y1],
-            [nx2, ny2, ny2*x2 - nx2*y2],
-            [nx3, ny3, ny3*x3 - nx3*y3],
+            [nx1, ny1, self.radius],
+            [nx2, ny2, self.radius],
+            [nx3, ny3, self.radius],
         ], dtype=float)
 
 
         vx, vy = self.linearSpeed*self.dx, self.linearSpeed*self.dy
-        v = np.array([vx, vy, self.angularVelocity], dtype=float)
+        v = np.array([vx, -vy, self.angularVelocity], dtype=float)
         #v = np.array([0,1000,0], dtype=float)
         # wheel linear speeds (if r=1) or angular speeds (rad/s) if you divide by real r
         w = (M @ v) / self.wheelRadius
@@ -356,6 +365,8 @@ class Robot():
                     # self.angularVelocity = -correction * 0.01
 
                     # Drive Motors
+                    #self.dx = -10
+                    #self.dy = 0
                     w = self.get_motorW()
                     print(f"{w=} {self.cx=}")
                     self.apply_wheel_speeds(w)
@@ -375,4 +386,4 @@ class Robot():
 
 if __name__ == "__main__":
     robot = Robot()
-    robot.run()
+    robot.run()	
