@@ -9,6 +9,7 @@ import os
 import shutil
 from PCA9685_smbus2 import PCA9685
 from gpiozero import DigitalOutputDevice
+import math
 
 class PicameraStream:
     def __init__(self, width=640, height=480):
@@ -63,9 +64,9 @@ class Robot():
 
     def __init__(self):
         
-        self.m1fw, self.m1bw = DigitalOutputDevice(pin=26), DigitalOutputDevice(pin=27)  # Motor 1
+        self.m1fw, self.m1bw = DigitalOutputDevice(pin=25), DigitalOutputDevice(pin=24)  # Motor 1
         self.m2fw, self.m2bw = DigitalOutputDevice(pin=22), DigitalOutputDevice(pin=23)  # Motor 2
-        self.m3fw, self.m3bw = DigitalOutputDevice(pin=25), DigitalOutputDevice(pin=24)  # Motor 3
+        self.m3fw, self.m3bw = DigitalOutputDevice(pin=26), DigitalOutputDevice(pin=27)  # Motor 3
 
         self.pwm = PCA9685.PCA9685(interface=1)
         self.pwm.set_pwm_freq(1600)
@@ -75,9 +76,9 @@ class Robot():
         self.max_physical_speed = 1.0 
         
         # dont judge, just enjoy :D
-        self.motor1 = [1 ,self.m1fw, self.m1bw]
+        self.motor1 = [0 ,self.m1fw, self.m1bw]
         self.motor2 = [3 ,self.m2fw, self.m2bw]
-        self.motor3 = [0 ,self.m3fw, self.m3bw]
+        self.motor3 = [1 ,self.m3fw, self.m3bw]
         self.motors = [self.motor1, self.motor2, self.motor3]
 
         # -- Debugging --
@@ -86,8 +87,9 @@ class Robot():
         self._clean_debug_dir()
         
         # -- Constants --
-        self.angles = np.deg2rad([60, 300, 180])    # angles of the wheels
-        self.linearSpeed = 0.8                      # m/s linear speed along (dx,dy)
+        self.angles = np.deg2rad([240, 120, 0])    # angles of the wheels
+
+        self.linearSpeed = 1                      # m/s linear speed along (dx,dy)
         self.angularVelocity = 0.0                  # rad/s (spin). Set >0 to rotate CCW
         self.wheelRadius = 0.045                      # wheel radius in meters (or set to your real radius)
         self.radius = 0.09                             # radius of robot
@@ -121,14 +123,15 @@ class Robot():
         """
 
         h, w = gray.shape[:2]
-        roi = gray[int(h*th_h):h, int(w*th_w):int(w-w*th_w)]
+        print(f"{h=} {w=} {h*th_h=} {w*th_w=}")
+        roi = gray[int(h-(h*th_h)):h, int(w*th_w):int(w-w*th_w)]
         
         # Correct unpacking order
         roi = cv2.GaussianBlur(roi, (5, 5), 0)
         
         # 2. Adaptive Threshold (Keep existing logic)
         binv = cv2.adaptiveThreshold(roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
-            cv2.THRESH_BINARY_INV, 101, 2)
+            cv2.THRESH_BINARY_INV, 201, 4)
         
         # 3. Morphological CLOSE to fill black "holes" inside the white line
         # This fixes the "hollow" line issue
@@ -220,9 +223,9 @@ class Robot():
 
 
         vx, vy = self.linearSpeed*self.dx, self.linearSpeed*self.dy
-        v = np.array([vx, -vy, self.angularVelocity], dtype=float)
-        #v = np.array([0,1000,0], dtype=float)
-        # wheel linear speeds (if r=1) or angular speeds (rad/s) if you divide by real r
+        v = np.array([vx, vy, self.angularVelocity], dtype=float)
+        #v = np.array([1,0,0], dtype=float)
+        #wheel linear speeds (if r=1) or angular speeds (rad/s) if you divide by real r
         w = (M @ v) / self.wheelRadius
         print("wheel speeds:", w)
         return w
@@ -261,10 +264,9 @@ class Robot():
         print(f"[INFO] Cleared and renewed debug directory: {self.debug_save_dir}")
     
     def set_single_motor(self, pwm_channel, infw, inbw, speed):
-        speed = max(min(speed, 100), -100) # Clamp
-        speed /= 100
-        speed = speed * 1000
+        speed = speed * 300
         speed = int(speed)
+        speed = max(min(speed, 2000), -2000) # Clamp
         print("speed clipped = ", speed)
             
         if speed >= 0:
@@ -285,7 +287,7 @@ class Robot():
         """
 
         for motor_info, speed in zip(self.motors, w):
-            pwm_val = (speed / self.max_physical_speed) * 100
+            pwm_val = speed
             
             # motor_info = [pwm_object, pin_a, pin_b]
             self.set_single_motor(motor_info[0], motor_info[1], motor_info[2], pwm_val)
@@ -319,7 +321,7 @@ class Robot():
                 self.frame_count += 1
 
                 # 2. IMAGE PROCESSING
-                mask, roi = self.preprocess_image(img_gray, th_w=0.35, th_h=0.1)
+                mask, roi = self.preprocess_image(img_gray, th_w=0.2, th_h=0.5)
                 print(f"{mask.shape=} {roi.shape=}")
 
                 try:
@@ -327,7 +329,7 @@ class Robot():
                     
                     # Update State (Found Line)
                     self.cx, self.cy = cx, cy
-                    self.dx, self.dy = dx, dy
+                    self.dx, self.dy = -dx, dy
                     lost_counter = 0
                     debug_overlay = self.draw_debug_info(roi, cx, cy, dx, dy)
                     print(f"{debug_overlay.shape=}")
@@ -342,7 +344,7 @@ class Robot():
                         break 
                     
                 # --- 4. DEBUG SAVING (every 10th frame) ---
-                if self.frame_count % 100 == 0:
+                if self.frame_count % 10 == 0:
                      print(f"Saving debug frames for frame {self.frame_count}...")
                      self.debug_save_images(
                          images={
@@ -367,6 +369,9 @@ class Robot():
                     # Drive Motors
                     #self.dx = -10
                     #self.dy = 0
+                    angle = math.atan2(dy,dx)
+                    self.angularVelocity = -1 * (0.5 * math.pi - angle)
+                    print(f"{self.angularVelocity=}")
                     w = self.get_motorW()
                     print(f"{w=} {self.cx=}")
                     self.apply_wheel_speeds(w)
