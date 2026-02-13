@@ -104,8 +104,8 @@ class OmniwheelController(DriveInterface):
 
     def _calc_kinematic_matrix(self, motors_config):
         # wheel angles around the robot
-        x = np.array(motors_config.distances) * np.cos(motors_config.angles)
-        y = np.array(motors_config.distances) * np.sin(motors_config.angles)
+        x = np.array(motors_config.distances) * np.cos(np.deg2rad(motors_config.angles))
+        y = np.array(motors_config.distances) * np.sin(np.deg2rad(motors_config.angles))
 
         x1, x2, x3 = x
         y1, y2, y3 = y
