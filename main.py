@@ -85,7 +85,7 @@ class PicameraStream(ImageStreamer):
         """Returns the most recent frame available."""
         return self.gray_frame
 
-class MotorsConfig():
+class MotorsConfig:
     def __init__(self):
         self.motors_num = 0
         self.angles: list[float] = []
@@ -105,7 +105,7 @@ class MotorsConfig():
         self.motors_num += 1
         return self
 
-class OmniwheelController():
+class OmniwheelController:
     def __init__(self, motors_config: MotorsConfig, pwm_interface: PCA9685, max_speed, verbose=False):
         assert motors_config.motors_num == 3
         self.verbose = verbose
