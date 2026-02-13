@@ -1,16 +1,16 @@
 import time
 import threading
-from typing import Any, Self, override
+from typing import Self, override
 import numpy as np
 import cv2
-from picamera2 import Picamera2, Preview
-from libcamera import Transform
-import RPi.GPIO as GPIO
 import os
 import shutil
+import math
+
+from picamera2 import Picamera2
+from libcamera import Transform
 from PCA9685_smbus2 import PCA9685
 from gpiozero import DigitalOutputDevice
-import math
 
 class ImageStreamer:
     def __init__(self):
