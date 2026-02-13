@@ -105,8 +105,19 @@ class MotorsConfig:
         self.motors_num += 1
         return self
 
-class OmniwheelController:
+class DriveInterface:
+    def __init__(self):
+        self.running = False
+    def start(self):
+        raise NotImplementedError()
+    def stop(self):
+        raise NotImplementedError()
+    def set_vector(self, driving_vector):
+        raise NotImplementedError()
+
+class OmniwheelController(DriveInterface):
     def __init__(self, motors_config: MotorsConfig, pwm_interface: PCA9685, max_speed, verbose=False):
+        super().__init__()
         assert motors_config.motors_num == 3
         self.verbose = verbose
         self.max_speed = max_speed
@@ -153,6 +164,7 @@ class OmniwheelController:
             print(f"wheel speeds: {w}")
         return w
     
+    @override
     def set_vector(self, driving_vector):
         """
         `driving_vector` - [x,y,rotation]
@@ -184,10 +196,11 @@ class OmniwheelController:
     def set_motor_speeds(self, motor_speeds):
         for i,speed in enumerate(motor_speeds):
             self.set_motor_speed(i, speed)
-
+    
+    @override
     def start(self):
         self.running = True    
-    
+    @override
     def stop(self):
         self._pwm.set_all_pwm(0,0)
         for fw,bw in zip(self.fws, self.bws):
@@ -320,9 +333,9 @@ class LineDetector:
         return None
 
 class Robot():
-    def __init__(self, wheel_controller: OmniwheelController, line_detector: LineDetector, verbose=False):
+    def __init__(self, drive_controller: DriveInterface, line_detector: LineDetector, verbose=False):
         self.verbose = verbose
-        self.wheel_controller = wheel_controller
+        self.drive_controller = drive_controller
         self.line_detector = line_detector
         
         # okay
@@ -380,7 +393,7 @@ class Robot():
           
     def stop_all(self):
         print(" EMERGENCY STOP: Halting all systems.")
-        self.wheel_controller.stop()
+        self.drive_controller.stop()
         self.line_detector.stop()
 
     def run(self):
@@ -429,7 +442,7 @@ class Robot():
                 self.angularVelocity = -1 * (0.5 * math.pi - angle)
                 vx, vy = -self.linearSpeed * dx, self.linearSpeed * dy
                 v = np.array([vx, vy, self.angularVelocity], dtype=float)
-                self.wheel_controller.set_vector(v)
+                self.drive_controller.set_vector(v)
                 
                 end = time.time()
                 print(f"time = {end-start}")
