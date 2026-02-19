@@ -28,10 +28,13 @@ class PicameraStream:
         self.stopped = False
         self.gray_frame = None
         
-        with self.picam2.controls as ctrl:
-            ctrl.AnalogueGain = 2.0 
-            ctrl.ExposureTime = 50000    
-            
+        # with self.picam2.controls as ctrl:
+        #     ctrl.AnalogueGain = 2.0 
+        #     ctrl.ExposureTime = 50000  
+
+        # set automatic exposure (e.g. to cope with sun shining on part of the track)
+        self.picam2.set_controls({'AeEnable': True})
+
         # Start the background thread,and kill the thread if done. 
         self.t = threading.Thread(target=self.update, args=())
         self.t.daemon = True 
@@ -123,7 +126,7 @@ class Robot():
         """
 
         h, w = gray.shape[:2]
-        print(f"{h=} {w=} {h*th_h=} {w*th_w=}")
+       # print(f"{h=} {w=} {h*th_h=} {w*th_w=}")
         roi = gray[int(h-(h*th_h)):h, int(w*th_w):int(w-w*th_w)]
         
         # Correct unpacking order
@@ -137,7 +140,17 @@ class Robot():
         # This fixes the "hollow" line issue
         kernel = np.ones((5,5), np.uint8)
         binv = cv2.morphologyEx(binv, cv2.MORPH_CLOSE, kernel)
-        return binv, roi
+        
+        # keep only the biggest "blob" (by area) - helps to filter out noise
+        # sometimes the biggest blob is not the line - maybe TODO fix
+        black = np.zeros((binv.shape[0],binv.shape[1]),np.uint8)
+        contours, hierarchy = cv2.findContours(binv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        c = max(contours, key = cv2.contourArea)
+        mask = cv2.drawContours(black,[c],0,255, -1)
+        self.lineArea = cv2.contourArea(c)
+        return mask, roi
+
+
 
     def middle_vector(self, binary):  # binary: 0/255, white = line
         # 1) Moments (single pass, O(N))
@@ -161,6 +174,10 @@ class Robot():
         vals, vecs = np.linalg.eigh(cov)
         v = vecs[:, np.argmax(vals)]      # shape (2,), unit vector in image coords (x right, y down)
         dx, dy = float(v[0]), float(v[1])
+        # the vector should always point to the bottom
+        if(dy < 0):
+            dy = -dy
+            dx = -dx
 
         return cx, cy, dx, dy
 
@@ -205,12 +222,12 @@ class Robot():
         nx3, ny3 = x3, y3
 
         
-        print("nx1 = ", nx1)
-        print("ny1 = ", ny1)
-        print("nx2 = ", nx2)
-        print("ny2 = ", ny2)
-        print("nx3 = ", nx3)
-        print("ny3 = ", ny3)
+        # print("nx1 = ", nx1)
+        # print("ny1 = ", ny1)
+        # print("nx2 = ", nx2)
+        # print("ny2 = ", ny2)
+        # print("nx3 = ", nx3)
+        # print("ny3 = ", ny3)
         
 
         # kinematic matrix (linear rim speed). For this symmetric layout,
@@ -222,11 +239,22 @@ class Robot():
         ], dtype=float)
 
 
-        vx, vy = self.linearSpeed*self.dx, self.linearSpeed*self.dy
-        v = np.array([vx, vy, self.angularVelocity], dtype=float)
+        #vx, vy = self.linearSpeed*self.dx, self.linearSpeed*self.dy
+        #vy = max(0.4, abs(self.lineArea - 6000)/10000)        # if(self.lineArea > 12000):
+        #     vy = 2
+        # else: 
+        #     vy = 0.5
+        vy = 0.5 * abs(3.14 - abs(self.angularVelocity))
+        if(self.lineArea < 6000): 
+            vy = 0.5
+        print(self.lineArea)
+        roi_w = self.roi_shape[1] / 2
+        vx = 0.005 * (roi_w - self.cx )
+        v = np.array([vx, vy, 0.7 * self.angularVelocity], dtype=float)
         #v = np.array([1,0,0], dtype=float)
         #wheel linear speeds (if r=1) or angular speeds (rad/s) if you divide by real r
         w = (M @ v) / self.wheelRadius
+        print("v: ", v)
         print("wheel speeds:", w)
         return w
         
@@ -266,8 +294,9 @@ class Robot():
     def set_single_motor(self, pwm_channel, infw, inbw, speed):
         speed = speed * 300
         speed = int(speed)
+        # print(speed)
         speed = max(min(speed, 2000), -2000) # Clamp
-        print("speed clipped = ", speed)
+        # print("speed clipped = ", speed)
             
         if speed >= 0:
             infw.on()
@@ -313,7 +342,7 @@ class Robot():
                 # 1. GET IMAGE (Instant non-blocking read)
                 start = time.time()
                 img_gray = self.camera.read_gray()
-                print(f"{img_gray.shape=}")
+                #print(f"{img_gray.shape=}")
                 
                 if img_gray is None: 
                     continue # Wait if camera glitches
@@ -322,8 +351,8 @@ class Robot():
 
                 # 2. IMAGE PROCESSING
                 mask, roi = self.preprocess_image(img_gray, th_w=0.2, th_h=0.5)
-                print(f"{mask.shape=} {roi.shape=}")
-
+                #print(f"{mask.shape=} {roi.shape=}")
+                self.roi_shape = roi.shape
                 try:
                     cx, cy, dx, dy = self.middle_vector(mask)
                     
@@ -332,20 +361,20 @@ class Robot():
                     self.dx, self.dy = -dx, dy
                     lost_counter = 0
                     debug_overlay = self.draw_debug_info(roi, cx, cy, dx, dy)
-                    print(f"{debug_overlay.shape=}")
+                    #print(f"{debug_overlay.shape=}")
                     
 
                 except ValueError:
                     # SAFETY WATCHDOG: Handle Lost Line
                     lost_counter += 1
                     if lost_counter > MAX_LOST_FRAMES:
-                        print("Line lost for too long! Safety Stop.")
+                        # print("Line lost for too long! Safety Stop.")
                         self.stop_all()
                         break 
                     
                 # --- 4. DEBUG SAVING (every 10th frame) ---
                 if self.frame_count % 10 == 0:
-                     print(f"Saving debug frames for frame {self.frame_count}...")
+                    #  print(f"Saving debug frames for frame {self.frame_count}...")
                      self.debug_save_images(
                          images={
                              "1_Gray": img_gray,
@@ -377,7 +406,7 @@ class Robot():
                     self.apply_wheel_speeds(w)
                 
                 end = time.time()
-                print(f"time = {end-start}")
+               # print(f"time = {end-start}")
         except KeyboardInterrupt:
             print("\nUser Interrupted (Ctrl+C)")
 
